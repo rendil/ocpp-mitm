@@ -1,8 +1,8 @@
 # ocpp-mitm
 
 A logging proxy that sits between an OCPP charger and its controller (CSMS). It
-relays every message unchanged, except for the rewrites you ask for, and logs
-each one to the terminal and to a JSONL file. Calls are paired with their
+relays every message unchanged except for IP address rewrites, and logs each
+one to the terminal and to a JSONL file. Calls are paired with their
 results, with latency.
 
 It handles both transports on one port:
@@ -16,6 +16,17 @@ It handles both transports on one port:
   listener, so the controller's own calls (Reset, RemoteStart, ...) come back
   through the proxy. They go on to the charger's real URL, with `wsa:To` set
   back to it.
+
+### IP address translation
+
+For each connection, the proxy swaps the charger's IP (the peer address it
+connected from) for the proxy's own IP (the address the charger connected to).
+The swap goes one way in everything sent to the controller and the other way
+in everything sent back to the charger. So the controller only ever sees the
+laptop's address, and the charger only ever sees its own. It matches whole
+tokens only, so `192.168.1.5` never matches inside `192.168.1.50`.
+`--no-auto-rewrite` turns this off; `--rewrite OLD=NEW` adds more swaps of the
+same kind.
 
 ## Run
 
@@ -33,7 +44,8 @@ LAN IP.
 | `--cert` / `--key` | serve `wss://`/`https://` to the charger |
 | `--callback-listen HOST:PORT` | SOAP callbacks from the controller, default `0.0.0.0:9001` |
 | `--callback-url URL` | callback URL put in `wsa:From`; default `http://<LAN IP>:9001` |
-| `--rewrite CHARGER=CONTROLLER` | literal swap: `CHARGER` → `CONTROLLER` towards the controller, reverse towards the charger; repeatable |
+| `--rewrite CHARGER=CONTROLLER` | extra whole-token swap: `CHARGER` → `CONTROLLER` towards the controller, reverse towards the charger; repeatable |
+| `--no-auto-rewrite` | do not swap the charger's IP for the proxy's |
 | `--insecure` | skip verifying the controller's TLS certificate |
 | `--log PATH` | JSONL file, default `./ocpp-<timestamp>.jsonl` |
 | `--full` | do not truncate messages on the terminal |
@@ -70,7 +82,9 @@ jq 'select(.action == "StartTransaction")' ocpp-*.jsonl
 
 - The SOAP charger-URL map lives in memory. After a restart, the controller's
   calls get a 502 until the charger sends a request (its next Heartbeat).
-- `--rewrite` is a plain substring swap over the whole message.
+- Rewrites are text swaps over the whole message, not edits of named fields.
+- The automatic swap uses the address the charger connects from. Behind NAT
+  that is the router's address, not the one the charger reports.
 
 ## Develop
 

@@ -15,7 +15,7 @@ import aiohttp
 from aiohttp import web
 
 from .log import CP_TO_CSMS, CSMS_TO_CP
-from .proxy import Proxy
+from .proxy import ChargerRoute, Proxy
 
 ANONYMOUS = "http://www.w3.org/2005/08/addressing/anonymous"
 _FORWARDED_HEADERS = ("Content-Type", "SOAPAction", "Authorization")
@@ -65,15 +65,16 @@ async def handle_from_charger(proxy: Proxy, request: web.Request) -> web.StreamR
     cp_id = header_value(_CHARGE_BOX, raw) or "?"
     advertised = header_value(_FROM, raw)
 
-    forwarded = proxy.rewriter.to_csms(raw)
+    rewriter = proxy.rewriter_for(request)
+    forwarded = rewriter.to_csms(raw)
     if advertised and advertised != ANONYMOUS:
-        proxy.chargers[cp_id] = advertised
+        proxy.chargers[cp_id] = ChargerRoute(advertised, rewriter)
         forwarded = replace_header_value(_FROM, forwarded, proxy.callback_url_for(cp_id))
 
     return await _exchange(
         proxy, request, cp_id, raw, forwarded,
         url=proxy.upstream_url(request.path_qs, websocket=False),
-        ssl=proxy.upstream_ssl, direction=CP_TO_CSMS,
+        ssl=proxy.upstream_ssl, direction=CP_TO_CSMS, rewriter=rewriter,
         note=f"wsa:From {advertised} -> {proxy.callback_url_for(cp_id)}" if advertised and advertised != ANONYMOUS else None,
     )
 
@@ -82,22 +83,22 @@ async def handle_from_csms(proxy: Proxy, request: web.Request) -> web.StreamResp
     """Controller → charger request (on the callback listener), charger → controller response."""
     raw = await request.text()
     cp_id = unquote(request.match_info["cp_id"])
-    target = proxy.chargers.get(cp_id)
-    if target is None:
+    route = proxy.chargers.get(cp_id)
+    if route is None:
         proxy.log.emit(proto="soap", cp=cp_id, dir=CSMS_TO_CP, kind="error", action=action_of(raw),
                        detail="no wsa:From seen for this charger yet; it must send a request through the proxy first",
                        body=raw)
         return web.Response(status=502, text=f"unknown charger {cp_id!r}\n")
 
-    forwarded = proxy.rewriter.to_charger(raw)
+    forwarded = route.rewriter.to_charger(raw)
     if header_value(_TO, forwarded) is not None:
-        forwarded = replace_header_value(_TO, forwarded, target)
+        forwarded = replace_header_value(_TO, forwarded, route.url)
 
-    return await _exchange(proxy, request, cp_id, raw, forwarded, url=target,
-                           ssl=proxy.charger_ssl, direction=CSMS_TO_CP, note=None)
+    return await _exchange(proxy, request, cp_id, raw, forwarded, url=route.url,
+                           ssl=proxy.charger_ssl, direction=CSMS_TO_CP, rewriter=route.rewriter, note=None)
 
 
-async def _exchange(proxy, request, cp_id, raw, forwarded, *, url, ssl, direction, note) -> web.StreamResponse:
+async def _exchange(proxy, request, cp_id, raw, forwarded, *, url, ssl, direction, rewriter, note) -> web.StreamResponse:
     log = proxy.log
     action = action_of(raw)
     log.emit(proto="soap", cp=cp_id, dir=direction, kind="call", action=action, detail=note or raw,
@@ -105,7 +106,7 @@ async def _exchange(proxy, request, cp_id, raw, forwarded, *, url, ssl, directio
 
     headers = {name: request.headers[name] for name in _FORWARDED_HEADERS if name in request.headers}
     reply_dir = CSMS_TO_CP if direction == CP_TO_CSMS else CP_TO_CSMS
-    reply_rewrite = proxy.rewriter.to_charger if direction == CP_TO_CSMS else proxy.rewriter.to_csms
+    reply_rewrite = rewriter.to_charger if direction == CP_TO_CSMS else rewriter.to_csms
     started = time.monotonic()
     try:
         async with proxy.session.post(url, data=forwarded.encode(), headers=headers, ssl=ssl) as resp:

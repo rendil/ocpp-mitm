@@ -53,7 +53,7 @@ async def test_charger_url_swapped_both_ways(serve, proxy_for):
 
         assert f"<wsa:Address>{advertised}</wsa:Address>" in csms_seen[0]
         assert real_charger_url not in csms_seen[0]
-        assert proxy.chargers == {"CP001": real_charger_url}
+        assert proxy.chargers["CP001"].url == real_charger_url
 
         # The controller calls back where it was told to, addressing the request there.
         reset = envelope("Reset", f"<wsa:To>{advertised}</wsa:To>", "<cs:resetRequest><cs:type>Soft</cs:type></cs:resetRequest>")

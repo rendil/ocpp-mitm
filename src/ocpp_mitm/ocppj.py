@@ -11,6 +11,7 @@ from aiohttp import web
 
 from .log import CP_TO_CSMS, CSMS_TO_CP
 from .proxy import Proxy
+from .rewrite import Rewriter
 
 # 5 (CALLRESULTERROR) and 6 (SEND) arrived in OCPP 2.1.
 _KINDS = {2: "call", 3: "result", 4: "error", 5: "result-error", 6: "send"}
@@ -71,6 +72,7 @@ async def handle(proxy: Proxy, request: web.Request) -> web.StreamResponse:
     url = proxy.upstream_url(request.path_qs, websocket=True)
     headers = {name: request.headers[name] for name in _FORWARDED_HEADERS if name in request.headers}
     log = proxy.log
+    rewriter = proxy.rewriter_for(request)
 
     # Connect upstream before accepting the charger, so the charger gets the
     # controller's real handshake answer: its chosen subprotocol, or its 401.
@@ -88,20 +90,21 @@ async def handle(proxy: Proxy, request: web.Request) -> web.StreamResponse:
     charger = web.WebSocketResponse(protocols=(upstream.protocol,) if upstream.protocol else (), autoping=True)
     await charger.prepare(request)
     log.emit(proto="ocpp-j", cp=cp_id, kind="conn",
-             detail=f"open {request.remote} -> {url} offered={offered} chosen={upstream.protocol}")
+             detail=f"open {request.remote} -> {url} offered={offered} chosen={upstream.protocol} "
+                    f"rewrites={list(rewriter.pairs)}")
 
     pairing = Pairing()
     await asyncio.gather(
-        _pump(proxy, cp_id, pairing, charger, upstream, CP_TO_CSMS),
-        _pump(proxy, cp_id, pairing, upstream, charger, CSMS_TO_CP),
+        _pump(proxy, rewriter, cp_id, pairing, charger, upstream, CP_TO_CSMS),
+        _pump(proxy, rewriter, cp_id, pairing, upstream, charger, CSMS_TO_CP),
     )
     log.emit(proto="ocpp-j", cp=cp_id, kind="conn",
              detail=f"closed charger={charger.close_code} upstream={upstream.close_code}")
     return charger
 
 
-async def _pump(proxy: Proxy, cp_id: str, pairing: Pairing, src, dst, direction: str) -> None:
-    rewrite = proxy.rewriter.to_csms if direction == CP_TO_CSMS else proxy.rewriter.to_charger
+async def _pump(proxy: Proxy, rewriter: Rewriter, cp_id: str, pairing: Pairing, src, dst, direction: str) -> None:
+    rewrite = rewriter.to_csms if direction == CP_TO_CSMS else rewriter.to_charger
     async for msg in src:
         if msg.type == aiohttp.WSMsgType.TEXT:
             forwarded = rewrite(msg.data)

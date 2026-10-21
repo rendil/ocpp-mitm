@@ -59,8 +59,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--callback-cert", help="PEM certificate for the callback listener")
     p.add_argument("--callback-key", help="PEM private key for --callback-cert")
     p.add_argument("--rewrite", action="append", default=[], metavar="CHARGER=CONTROLLER",
-                   help="replace CHARGER with CONTROLLER in everything sent to the controller, and the "
-                        "reverse towards the charger; repeatable")
+                   help="replace the whole token CHARGER with CONTROLLER in everything sent to the controller, "
+                        "and the reverse towards the charger; repeatable, on top of the automatic IP swap")
+    p.add_argument("--no-auto-rewrite", dest="auto_rewrite", action="store_false",
+                   help="do not swap each charger's IP for this machine's IP (on by default)")
     p.add_argument("--insecure", action="store_true", help="do not verify the controller's TLS certificate")
     p.add_argument("--log", type=Path, help="JSONL log file (default ./ocpp-<timestamp>.jsonl)")
     p.add_argument("--full", action="store_true", help="print whole messages on the terminal, not 200 characters")
@@ -77,6 +79,7 @@ async def serve(args: argparse.Namespace) -> None:
         callback_url=callback_url,
         rewriter=Rewriter.parse(args.rewrite),
         verify_upstream=not args.insecure,
+        auto_rewrite=args.auto_rewrite,
     )
     log_path = args.log or Path(f"ocpp-{datetime.now():%Y%m%d-%H%M%S}.jsonl")
 
